@@ -1,0 +1,1093 @@
+---
+title: "UM Projekt"
+author: "Justyna Wachowiak"
+output:
+  html_document:
+    code_folding: hide
+    theme: cerulean
+    toc: yes
+    toc_depth: '2'
+    df_print: paged
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+***
+## 1. Wstęp
+
+W projekcie wykorzystany zostanie niezbalansowany zbiór danych "Adult". Zbiór został stworzony przez Ronny'ego Kohavi i Barry'ego Beckera. Dane pochodzą z zasobów United States Census Bureau z 1994 roku. Zawierają one informacje dotyczące różnych cech osób, jak np. wiek, wykształcenie, stan cywilny, zawód, liczba godzin pracy w tygodniu i inne.
+
+Głownym celem projektu będzie przeprowadzenie predykcji, czy dana osoba zarabia więcej niż 50 000 dolarów rocznie. Predykcja zostanie wykonana przy użyciu trzech różnych metod uczenia maszynowego, takich jak: algorytm SVM, drzewa decyzyjne oraz regresja logistyczna. Otrzymane wyniki zostaną ze sobą zestawione i poddane dokadnej analizie.
+
+W kolejnej części wybrany zosatnie jeden z wcześniej utworzonych modeli, w oparciu o który przeprowadzona zostanie jego interpretowalność. Na koniec, w ramach podsumowania, zaprezentowane zostaną wnioski z całego projektu.
+
+***
+## 2. Opis oraz wstępna analiza danych
+
+```{r include=FALSE}
+library(caret)
+library(DALEX)
+library(ggplot2)
+library(reshape2)
+library(ingredients)
+library(r2d3)
+library(dplyr)
+library(ipred)
+library(rpart) 
+library(rattle) 
+library(vip) 
+library(gridExtra)
+```
+
+### 2.1 Opis
+
+-   **Próbka danych**
+
+```{r}
+# Wczytanie danych
+adult <- read.csv("adult.csv")
+head(adult)
+```
+
+```{r include=FALSE}
+str(adult)
+```
+
+-   **Liczba obserwacji**: 48842
+
+-   **Liczba zmiennych**: 15
+
+-   **Opis zmiennych:**
+
+    1.  **age**: wiek (zmienna ciągła)
+
+    2.  **workclass**: klasa pracownicza, wskazuje sektor zatrudnienia danej osoby (zmienna kategoryczna)
+
+    3.  **fnlwgt**: ostateczna waga; liczba określająca ilość osób, które próbka reprezentuje w populacji (zmienna ciągła)
+
+    4.  **education**: poziom wykształcenia osoby (zmienna kategoryczna)
+
+    5.  **educational.num**: liczbowy odpowiednik zmiennej 'education', przypisujący liczbową wartość poziomowi wykształcenia osoby (zmienna ciągła)
+
+    6.  **martial.status**: stan cywilny (zmienna kategoryczna)
+
+    7.  **occupation**: zawód (zmienna kategoryczna)
+
+    8.  **relationship**: status relacji danej osoby w gospodarstwie domowym (zmienna kategoryczna)
+
+    9.  **race**: rasa (zmienna kategoryczna)
+
+    10. **gender**: płeć (zmienna kategoryczna)
+
+    11. **capital.gain**: przychód kapitałowy (zmienna ciągła)
+
+    12. **capital.loss**: strata kapitałowa (zmienna ciągła)
+
+    13. **hours.per.week**: liczba godzin pracy w ciągu tygodnia (zmienna ciągła)
+
+    14. **native.country**: kraj pochodzenia (zmienna kategoryczna)
+
+    15. **income**: zmienna wynikowa, czy osoba zarabia więcej niż 50K dolarów rocznie (zmienna kategoryczna)
+
+-   **Brakujące wartości**: zbiór danych zawiera brakujące wartości, które są oznaczone znakiem '?'.
+
+###  2.2 Selekcja danych
+
+Z uwagi na ograniczone zasoby urządzenia, na którym budowane są modele, zbiór musi zostać znacząco zmniejszony do liczby obserwacji równej 3000. Na rzecz projektu nowy zbiór zostanie wyselekcjonowany z danych osób urodzonych w Stanach Zjednoczonych. Zatem 1. krokiem będzie wyfiltrowanie danych dla zmiennej native.country == "United-States", a następnie krok 2. to randomowy wybór 3000 obserwacji, przy jednoczesnym zachowaniu proporcji zbioru.
+
+**Wylosowane dane**
+
+```{r}
+set.seed(2)
+
+# Wyfiltruj dane dla US
+US_adult <- adult[adult$native.country == "United-States", ]
+
+adult_3000 <- US_adult %>%
+  group_by(income) %>%
+  sample_frac(size = 3000 / nrow(US_adult)) %>%
+  ungroup()
+
+str(adult_3000)
+```
+
+###  2.3 Analiza danych
+
+#### a) Zbalansowanie zbioru
+
+```{r}
+income_counts <- table(adult_3000$income)
+colors <- c("navyblue", "gray")
+
+# Plot a pie chart
+pie(income_counts, 
+    labels = paste(names(income_counts), ": ", round(prop.table(income_counts) * 100, 1), "%"),
+    col = colors)
+```
+
+Zbiór jest niezbalansowany. Widoczna jest zdecydowana przewaga obserwacji ze zmienną wynikową '\<=50K', oznaczającą zarobki mniejsze lub równe 50 000 dolarów rocznie, które stanowią aż 75.6% zbioru.
+
+
+#### b) Brakujące wartości
+
+```{r}
+#  Zmiana oznaczenia brakujących wartości z ? na NA
+adult_3000 <- adult_3000 %>%
+  mutate(across(everything(), ~gsub("\\?", NA, .)))
+
+adult_3000 %>% 
+  summarise(across(everything(), ~sum(is.na(.))))
+```
+
+```{r}
+missing_rows_1 <- sum(!complete.cases(adult_3000))
+print(paste('Suma wierszy z brakującymi danymi:', missing_rows_1))
+
+missing_rows_2 <- sum(is.na(adult_3000$workclass) & is.na(adult_3000$occupation))
+print(paste('Suma wierszy z wartością NA w workclass i occupation:', missing_rows_2))
+```
+
+Nowo utworzony zbiór zawiera niekompletne dane w 159 wierszach. Brakujące wartości wystepują dla 2 zmiennych:
+
+-   workclass: 158 obserwacji,
+
+-   occupation: 159 obserwacji.
+
+Jak można zauważyć, istnieje duża zależność między udzieleniem informacji na pytanie o klasę pracowniczą oraz zawód. We wszystkich przypadkach, gdzie brakuje danych w zmiennej 'occupation', również występuje brak informacji dla zmiennej 'workclass'.
+
+Z uwagi na fakt, że są to zmienne kategoryczne, brakujące wartości zostaną uzupełnione przy wykorzystaniu mody z podziałem na grupy według płci.
+
+Co więcej, ze zbioru wyeliminowane zostaną 3 kolumny:
+
+-   'fnlwgt' - jest to liczba osób reprezentująca dany rekord. Na rzecz tego projektu, jeden wiersz, zostanie uznany za informacje zebrane na temat jednej osoby.
+
+-   'educational.num' - jest ona liczbowym odpowiednikiem kolumny education
+
+-   'native.country' - w ramach selekcji danych z pkt. 2.2 wyfiltrowane zostały wyłącznie rekordy z wartością "United-States", a zatem zmienna ta nie będzie już istotna.
+
+```{r}
+moda <- function(x) {
+  ux <- unique(na.omit(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+```
+
+```{r}
+# Usunięcie kolumn
+adult_clean <- select(adult_3000, -c(fnlwgt, educational.num, native.country))
+
+# Uzupełnienie danych
+adult_clean <- adult_clean %>%
+  group_by(gender) %>%
+  mutate(workclass = ifelse(is.na(workclass), moda(workclass), workclass)) %>%
+  ungroup()
+
+adult_clean <- adult_clean %>%
+  group_by(gender) %>%
+  mutate(occupation = ifelse(is.na(occupation), moda(occupation), occupation)) %>%
+  ungroup()
+```
+
+```{r include=FALSE}
+adult_clean %>% summarise(across(everything(), ~sum(is.na(.))))
+```
+
+```{r}
+adult_clean$age <- as.numeric(adult_clean$age)
+adult_clean$workclass <- as.factor(adult_clean$workclass)
+adult_clean$education <- as.factor(adult_clean$education)
+adult_clean$marital.status <- as.factor(adult_clean$marital.status)
+adult_clean$occupation <- as.factor(adult_clean$occupation)
+adult_clean$relationship <- as.factor(adult_clean$relationship)
+adult_clean$race <- as.factor(adult_clean$race)
+adult_clean$gender <- as.factor(adult_clean$gender)
+adult_clean$capital.gain <- as.numeric(adult_clean$capital.gain)
+adult_clean$capital.loss <- as.numeric(adult_clean$capital.loss)
+adult_clean$hours.per.week <- as.numeric(adult_clean$hours.per.week)
+adult_clean$income <- as.factor(adult_clean$income)
+```
+
+```{r include=FALSE}
+adult_clean %>%
+  select_if(is.factor) %>%
+  summary()
+```
+
+```{r include=FALSE}
+adult_clean %>%
+  select_if(is.numeric) %>%
+  summary()
+```
+
+####  c) Macierz korelacji
+
+```{r}
+quantitativeColumns <- c("age", "hours.per.week", "capital.gain", "capital.loss")
+corr_matrix <- cor(adult_clean[quantitativeColumns])
+corr_melted <- melt(corr_matrix)
+ggplot(corr_melted, aes(Var1, Var2, fill = value)) +
+    geom_tile() +
+    scale_fill_gradient2(limits = c(-1, 1), mid = "white", high = "blue", low = "red") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    geom_text(aes(label = round(value, 2)), size = 3)
+
+```
+
+Z powyższej macierzy korelacji wynika, iż żadna z par zmiennych nie wykazuje silnej korelacji, co sugeruje, że nie ma silnych liniowych zależności między badanymi zmiennymi ilościowymi.
+
+
+####  d) Wpływ zmiennych na zmienną prognozowaną
+
+**Regresja liniowa**
+
+```{r}
+adult_clean_lm <- adult_clean
+adult_clean_lm$income <- factor(x = adult_clean_lm$income, 
+                        levels = c("<=50K",">50K"),
+                        labels = c("0","1"))
+adult_clean_lm$income <- as.numeric(as.character(adult_clean_lm$income))
+model_lm <- lm(income ~ age + hours.per.week + capital.gain + capital.loss, data = adult_clean_lm)
+summary(model_lm)
+```
+
+Stworzona regresja liniowa pokazuje, że wszystkie zmienne ilościowe ('age', 'hours.per.week', 'capital.gain', 'capital.loss') są statystycznie znaczące jako predyktory zmiennej 'income' na poziomie 0.001, co jest bardzo silnym dowodem na ich związek z dochodem. Każdy dodatkowy rok ('age'), każda dodatkowa przepracowana godzina tygodniowo ('hours.per.week'), dodatkowy jednostkowy przyrost 'capital.gain', a także dodatkowy przyrost 'capital.loss' jest związany ze wzrostem dochodu ('income'), przy założeniu stałości innych zmiennych.
+
+**\
+Testy Chi-Squared**
+
+```{r warning=FALSE}
+variables <- c("workclass", "education", "marital.status", "occupation", 
+               "relationship", "race", "gender")
+
+results <- data.frame(Variable = character(), X_Squared = numeric(), 
+                      Degrees_of_Freedom = numeric(), P_Value = numeric(),
+                      Less_than_50K = character(),
+                      More_than_50K = character(),
+                      stringsAsFactors = FALSE)
+
+for (var in variables) {
+  table_kg <- table(adult_clean[[var]], adult_clean$income)
+
+  chisq_test <- chisq.test(table_kg)
+
+  most_freq_less_than_50K <- names(which.max(table_kg[, "<=50K"]))
+  most_freq_more_than_50K <- names(which.max(table_kg[, ">50K"]))
+
+  results <- rbind(results, data.frame(Variable = var, 
+                                       X_Squared = chisq_test$statistic, 
+                                       Degrees_of_Freedom = chisq_test$parameter, 
+                                       P_Value = chisq_test$p.value,
+                                       Less_than_50K = most_freq_less_than_50K,
+                                       More_than_50K = most_freq_more_than_50K))
+}
+
+row.names(results) <- NULL
+results
+```
+
+Z przeprowadzonych testów Chi-Squared dla zmiennych kategorycznych wynika, że wszystkie są czynnikami mającymi statystycznie istotny wpływ na poziom dochodów osób badanych. Niemniej jednak, nie oznacza to, że ich wpływ jest równie silny. Dla przykładu zmienna 'marital.status' (656.17492) ma wyższą wartość chi-kwadrat niż 'race' (28.355), co sugeruje, że stan cywilny może mieć silniejszy związek z dochodem.
+
+Kolumny 'Less_than_50K' i 'More_than_50K' pokazują, które kategorie zmiennych niezależnych są najczęstsze wśród osób zarabiających poniżej oraz powyżej 50 000 dolarów rocznie. Wartości te wskazują na dominujące charakterystyki w każdej grupie dochodowej i tak na przykład, najwięcej osób zarabiających mniej niż 50 000 dolarów rocznie pracuje w sektorze prywatnym ('Private'), najczęściej mają wykształcenie średnie ('HS-grad'), najczęstszy status cywilny w tej grupie to Never-married, dominującym zawodem jest praca administracyjno-biurowa ('Adm-clerical'), relationship - 'Not-in-family' oraz płeć - mężczyzna.
+
+W grupie dochodowej powyżej 50 000 dolarów rocznie, również najczęściej osoby pracują w sektorze prywatnym, najczęściej mają wykształcenie licencjackie ('Bachelors'), dominujący status cywilny to 'Married-civ-spouse', najczęstszym zawodem jest pozycja kierownicza lub zarządzająca ('Exec-managerial'), jeżeli chodzi o relationship, tutaj dominuje kategoria 'Husband', a płcią przeważającą są jednakowo mężczyźni.
+
+
+####  e) Badanie Capital Gain / Capital Loss
+
+```{r}
+gain_0 <- sum(adult_clean$capital.gain == 0)
+gain_n0 <- sum(adult_clean$capital.gain > 0)
+gain_income_n0 <- sum(adult_clean$capital.gain > 0 & adult_clean$income == '>50K')
+print(paste('Capital Gain równy 0:', gain_0))
+print(paste('Capital Gain różny od 0:', gain_n0))
+print(paste('Capital Gain różny od 0 i income > 50K:', gain_income_n0))
+
+loss_0 <- sum(adult_clean$capital.loss == 0)
+loss_n0 <- sum(adult_clean$capital.loss > 0)
+print(paste('Capital Loss równy 0:', loss_0))
+print(paste('Capital Loss różny od 0:', loss_n0))
+```
+
+Większość obserwacji dla obu grup dochodowych ('\<=50K' i '\>50K') ma 'capital.gain' oraz 'capital.loss' równy 0, co wskazuje na to, że dla większości osób z tego zbioru danych zysk kapitałowy nie jest czynnikiem. Może to sugerować, że większość osób nie zarabia na inwestycjach kapitałowych lub nie zgłasza zysków kapitałowych. Co jednak warto zauważyć, dla większości przypadków, kiedy 'capital.gain' jest większy od 0, dochód również wynosi więcej niż 50K dolarów rocznie, a zatem można wywnioskować, że zmienna ta będzie mieć wpływ na roczne zarobki danej osoby.
+
+```{r}
+# Wykresy Pudełkowe względem 'income'
+ggplot(adult_clean, aes(x=income, y=capital.gain)) + geom_boxplot()
+
+ggplot(adult_clean, aes(x=income, y=capital.loss)) + geom_boxplot()
+```
+
+Pomimo iż dla 'capital.gain' oraz 'capital.loss' w obu grupach dochodowych występują outliery, nie zostaną one usunięte, ponieważ jak już zostało wcześniej zbadane zmienne te są istotne, a ich wartości będące różne od 0 wpływają na roczne dochody. Dlatego też, pozbycie się outlierów oznaczałoby pozbycie się istotnych informacji z wykorzystywanego zbioru. Ostatecznie kolumny 'capital.loss' oraz 'capital.gain' zostaną przekonwertowane na zmienne binarne, aby móc wyróżnić tych którzy zarabiają na inwestycjach kapitałowych od tych, którzy takowych nie posiadają.
+
+Po przekształceniu:
+
+```{r}
+# Konwersja kolumn capital loss/gain na 0-1
+adult_clean$capital.loss <- as.factor(as.integer(adult_clean$capital.loss > 0))
+adult_clean$capital.gain <- as.factor(as.integer(adult_clean$capital.gain > 0))
+head(adult_clean)
+```
+
+####  f) Wartości odstające
+
+**Wykresy pudełkowe zmiennych ilościowych przed usunięciem outlierów**
+
+```{r}
+par(mfrow = c(1, 3))
+
+boxplot(adult_clean$age, main = "Age")
+boxplot(adult_clean$hours.per.week, main = "Hours per Week")
+```
+
+Z wykresów wynika, że wartości odstające znajdują się w obu zmiennych ilościowych. Więcej jest ich dla liczby przepracowanych godzin w ciągu tygodnia. W obu zmiennych zostaną one usunięte za pomocą metody kwantylowej 1,5⋅IQR.
+
+```{r}
+Q1 <- quantile(adult_clean$age, 0.25)
+Q3 <- quantile(adult_clean$age, 0.75)
+IQR <- Q3 - Q1
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+outliers <- adult_clean$age < lower_bound | adult_clean$age > upper_bound
+adult_clean <- adult_clean[!outliers,]
+```
+
+```{r}
+Q1 <- quantile(adult_clean$hours.per.week, 0.25)
+Q3 <- quantile(adult_clean$hours.per.week, 0.75)
+IQR <- Q3 - Q1
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+outliers <- adult_clean$hours.per.week < lower_bound | adult_clean$hours.per.week > upper_bound
+adult_clean <- adult_clean[!outliers,]
+```
+
+**\
+Wykresy pudełkowe zmiennych ilościowych po usunięciu outlierów**
+
+```{r}
+par(mfrow = c(1, 3))
+
+boxplot(adult_clean$age, main = "Age")
+boxplot(adult_clean$hours.per.week, main = "Hours per Week")
+```
+
+####  g) Wgląd w przygotowane dane
+
+**Zmienna income**
+
+```{r}
+table(adult_clean$income)
+```
+
+**\
+Dane**
+
+```{r}
+str(adult_clean)
+```
+
+Po przygotowaniu danych, obecny zbiór zawiera łącznie 2,188 obserwacji dla 12 zmiennych - 2 ilościowe i 10 kategorycznych. Z tego 1622 obserwacje należą do klasy '\<=50K' oraz 566 obserwacji do klasy '\>50K' zmiennej 'income'. Oznacza to, że w dalszym ciągu występuje duża dysproporacja między klasami zmiennej wynikowej, klasa większościowa stanowi ok. 74% zbioru.
+
+***
+##  3. Podział na zbiór uczący i testowy
+
+Podział na zbiór uczący i testowy będzie zgodny z proporcjami: 80% - dane treningowe oraz 20% - dane testowe. Ze względu na wysokie niezbalansowanie zbioru, dane treningowe zostaną poddane metodzie oversamplingu, a w dalszym kroku standaryzacji, która będzie niezbędna przy budowaniu modeli SVM w dalszej części projektu.
+
+```{r}
+df <- adult_clean
+```
+
+```{r}
+# Podział na zbiór uczący i testowy
+data_sample <- createDataPartition(df$income, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+train <- df[data_sample, ]
+test <- df[-data_sample, ]
+```
+
+**\
+Statystyki dla zbioru uczącego**
+
+```{r}
+summary(train)
+```
+
+**\
+Statystyki dla zbioru testowego**
+
+```{r}
+summary(test)
+```
+
+Porównanie podsumowań dla zbiorów treningowego i testowego wykazuje spójność ich statystyk. Średni wiek w zbiorze treningowym wynosi około 38 lat, podczas gdy w zbiorze testowym to około 40 lat, co wskazuje na niewielką różnicę. Rozkłady godzin pracy tygodniowo są niemal identyczne, z medianą 40 godzin w obu zbiorach, a to sugeruje dobrze wyważony podział. Co więcej, proporcje płci i poziomy wykształcenia wydają się być podobne w obu grupach, z dominacją mężczyzn i najwyższym odsetkiem osób z wykształceniem średnim (HS-grad).
+
+**\
+Oversampling**
+
+Po zastosowaniu oversamplingu dane treningowe zawierają równo po 1298 obserwacji dla klasy '\>50K' oraz '\<=50K'.
+
+```{r}
+set.seed(3)
+train_o <- upSample(x=train[,-12],
+                    y=train$income,
+                    list = FALSE,
+                    yname = "income")
+
+summary(train_o)
+```
+
+**\
+Standaryzacja**
+
+Statystyki danych treningowych po oversamplingu i standaryzacji:
+
+```{r}
+# Standaryzacja danych
+preProcValues <- preProcess(train, method = c("center", "scale"))
+
+train_s <- predict(preProcValues, train)
+train_so <- predict(preProcValues, train_o)
+test_s <- predict(preProcValues, test)
+
+str(train_so)
+```
+
+***
+##  4. Modele
+
+W tym rozdziale przedstawione zostaną procesy tworzenia trzech znanych modeli uczenia maszynowego: SVM, drzew decyzyjnych oraz regresji logistycznej. Każdy z tych modeli zostanie szczegółowo przeanalizowany pod kątem jego efektywności. Końcowa część rozdziału poświęcona bedzię porównaniu tych technik, aby wyjaśnić ich wzajemne mocne i słabe strony oraz wyłonić najefektywniejszą z nich.
+
+W ramach wstępu do oceny efektywności modeli warto wspomnieć, że dla danego zbioru danych w kontekście predykcji zmiennej dochodowej 'income', większe znaczenie nabiera miara specyficzności, która skupia się na ograniczeniu liczby fałszywie pozytywnych wyników. Jest to kluczowe, ponieważ fałszywie pozytywny wynik w tym przypadku oznacza błędne zaklasyfikowanie osoby do grupy o dochodach '\>50K', kiedy faktycznie jej dochody są '\<=50K'. Może to być szczególnie istotne w przypadkach, takich jak przyznawanie kredytów, gdzie przecenienie zdolności kredytowej osoby może prowadzić do ryzykownych decyzji finansowych.
+
+```{r}
+# Funkcje pomocnicze
+```
+
+```{r}
+# Funkcja dla modeli svm
+evaluate_svm <- function(model, data, class_col, model_name, dataset) {
+
+  predictions <- predict(model, newdata = data)
+  
+  confusion_matrix <- confusionMatrix(predictions, data[[class_col]])
+  
+  results <- data.frame(Model = model_name,
+                        Dataset = dataset,
+                        Accuracy = as.numeric(round(confusion_matrix$overall["Accuracy"], 3)),
+                        Sensitivity = as.numeric(round(confusion_matrix$byClass["Sensitivity"], 3)),
+                        Specificity = as.numeric(round(confusion_matrix$byClass["Specificity"], 3)),
+                        BalancedAccuracy = as.numeric(round(confusion_matrix$byClass["Balanced Accuracy"], 3)))
+  return (results)
+}
+```
+
+```{r}
+# Funkcja dla modeli regresji logistycznej
+evaluate_glm <- function(glm_model, test_data, dataset) {
+  
+  pred_glm <- predict(glm_model, test_data, type="response")
+  pred_glm <- as.factor(ifelse(pred_glm > 0.5, '>50K', '<=50K'))
+
+  confusion_matrix_glm <- confusionMatrix(as.factor(pred_glm), test_data$income)
+  conf_matrix <- confusion_matrix_glm$table
+
+  TP <- conf_matrix[2, 2]
+  FP <- conf_matrix[2, 1]
+  TN <- conf_matrix[1, 1]
+  FN <- conf_matrix[1, 2]
+
+  # Dokładność
+  accuracy <- (TP + TN) / (TP + TN + FP + FN)
+
+  # Czułość
+  sensitivity <- if ((TP + FN) == 0) 0 else TP / (TP + FN)
+
+  # Specyficzność
+  specificity <- if ((TN + FP) == 0) 0 else TN / (TN + FP)
+
+  results_glm <- data.frame(Model = "LogisticReg",
+                            Dataset = dataset,
+                            Accuracy = as.numeric(round(accuracy, 3)),
+                            Sensitivity = as.numeric(round(sensitivity, 3)),
+                            Specificity = as.numeric(round(specificity, 3)))
+
+  return (results_glm)
+}
+```
+
+###  4.1 SVM
+
+Dla metody SVM zostanie dokonana analiza trzech modeli: SVM z jądrem liniowym, wielomianowym oraz radialnym. Dodatkowo, w każdym z tych modeli dostosowane zostaną hiperparametry, aby uzyskać optymalną wydajność każdego z nich.
+
+#### a) Linear
+
+```{r include=FALSE}
+tuneGrid <- expand.grid(C = seq(0, 2, length = 20))
+
+# SVM Liniowy
+svm <- train(
+  income ~ .,
+  data = train_so,
+  method = "svmLinear",
+  preProcess = NULL,
+  tuneGrid = tuneGrid
+)
+
+svm
+```
+
+```{r}
+plot(svm)
+```
+
+Z wykresu można zauważyć, że w modelu z jądrem liniowym wraz ze zmianą wartości Cost w nieliniowy sposób zmieniały się wyniki Accuracy. Najlepszy został osiągnięty dla C = 0.6315789 i wyniósł 0.8014, czyli 80.14%.
+
+####  b) Poly
+
+```{r include=FALSE}
+# SVM Wielomianowe
+svm1 <- train(
+  income ~ .,
+  data = train_so,
+  method = "svmPoly",
+  preProcess = NULL,
+  tuneLength = 4
+)
+
+svm1
+```
+
+```{r}
+plot(svm1)
+```
+
+Powyższy wykres przedstawia zależność Accuracy od trzech optymalizowanych hiperparametrów modelu SVM z jądrem wielomianowym. Najlepszy okazuje się model z konfiguracją: degree = 3, scale = 1 i C = 0.25, którego dokładność wyniosła 0.8477.
+
+####  c) Radial
+
+```{r include=FALSE}
+tuneGrid <- expand.grid(
+  sigma = c(0.04, 0.5, 1),
+  C = c(0.1, 0.5, 1, 2)
+)
+
+# SVM Radialne
+svm2 <- train(
+  income ~ .,
+  data = train_so,
+  method = "svmRadial",
+  preProcess = NULL,
+  tuneGrid = tuneGrid
+)
+
+svm2
+```
+
+```{r}
+plot(svm2)
+```
+
+Wykres przedstwia wyniki dokladności dla różnych konfiguracji wartosci Sigma oraz Cost. Jak mozna zauważyc najlepsze wyniki (najwyższe Accuracy) osiągniete zostały dla Sigma = 1 i Cost = 2, Accuracy było wtedy równe 0.8733.
+
+####  d) Porównanie wyników
+
+```{r}
+svm_test_results <- data.frame()
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm, test_s, "income", "SVM Linear", "test"))
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm, train_so, "income", "SVM Linear", "train"))
+
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm1, test_s, "income", "SVM Polynomial", "test"))
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm1, train_so, "income", "SVM Polynomial", "train"))
+
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm2, test_s, "income", "SVM Radial", "test"))
+svm_test_results <- rbind(svm_test_results, evaluate_svm(svm2, train_so, "income", "SVM Radial", "train"))
+
+svm_test_results
+```
+
+Modele SVM z jądrem wielomianowym i radialnym wykazują znacznie lepszą wydajność na zbiorze treningowym, sugerując wręcz potencjalne nadmierne dopasowanie do danych treningowych, ponieważ ich wyniki na zbiorze testowym są zdecydowanie gorsze. Z kolei, model liniowy ma niższą dokładność na zbiorze treningowym, jednakże wykazuje większą spójność w wynikach między danymi treningowymi a testowymi.
+
+Zwracając uwagę na wyniki dla zbioru testowego, które są bardziej miarodajne dla oceny zdolności generalizacji modelu, wszystkie trzy modele mają podobną dokładność, lecz różnią się pod względem czułości i specyficzności. Model radialny ma znacznie gorszą specyficzność w porównaniu z innymi modelami, co wskazuje na to, że może on generować dużą liczbę fałszywie pozytywnych wyników. Z kolei model liniowy ma najniższą czułość spośród wszystkich modeli, co sugeruje, że nie jest on tak dobry w wykrywaniu osób z wyższymi dochodami.
+
+###  4.2 Drzewa decyzyjne
+
+Korzystając z metody drzew decyzyjnych, przeprowadzony zostanie eksperyment mający na celu ocenę wydajności prostego drzewa decyzyjnego w porównaniu z drzewem decyzyjnym wykorzystującym metodę baggingu.
+
+####  a) Maxdepth = 4
+
+```{r include=FALSE}
+# Model drzewa decyzyjnego
+model <- rpart(income ~. ,
+               data = train_o,
+               method = "class",
+               control = rpart.control(maxdepth = 4))
+model
+```
+
+**Postać drzewa decyzyjnego**
+
+```{r}
+fancyRpartPlot(model, sub=NULL)
+```
+
+```{r}
+y_pred_train <- predict(model, newdata = train_o[,-12], type = "class")
+y_pred_test <- predict(model, newdata = test[,-12], type = "class")
+```
+
+**\
+Prognoza na zbiorze uczącym:**
+```{r}
+confusionMatrix(y_pred_train, train_o$income, positive = ">50K")
+```
+**\
+Prognoza na zbiorze testowym:**
+```{r}
+confusionMatrix(y_pred_test, test$income, positive = ">50K")
+```
+
+Podsumowanie wyników:
+
+-   Zbiór uczący: Dokładność (Accuracy): 0.8109, Czułość (Sensitivity): 0.9083, Specyficzność (Specificity): 0.7134
+
+-   Zbiór testowy: Dokładność (Accuracy): 0.7277, Czułość (Sensitivity): 0.9027, Specyficzność (Specificity): 0.6667
+
+Z otrzymanych wyników można wywnioskować, że model ma tendencję do lepszego identyfikowania przypadków '\>50K' niż '\<=50K', biorąc pod uwagę wysoką czułość i niższą specyficzność. Z tego powodu, model ten może być bardziej przydatny w sytuacjach, gdzie ważniejsze jest zminimalizowanie liczby fałszywie negatywnych wyników, niż fałszywie pozytywnych.
+
+**\
+Wykres ważności zmiennych**
+
+```{r}
+vip(model)
+```
+
+Powyższy wykres pokazuje, że stan cywilny ('marital.status') ma największy wpływ na przewidywaną zmienną 'income'. Drugą najważniejszą zmienną jest 'relationship', co może odzwierciedlać fakt, że pozycja w gospodarstwie domowym często koreluje z obowiązkami finansowymi i zasobami. Pozostałe zmienne mają umiarkowaną ważność, również odgrywają ważną rolę w przewidywaniu dochodu, choć nie są tak dominujące jak status cywilny czy relacje rodzinne.
+
+#### b) Bagging
+
+```{r}
+# Liczba drzew
+n_trees <- c(50, 100, 150, 200, 300, 500)
+
+results_train_bagg <- data.frame(NumTrees = numeric(0), Accuracy = numeric(0), Sensitivity = numeric(0), Specificity = numeric(0))
+results_test_bagg <- data.frame(NumTrees = numeric(0), Accuracy = numeric(0), Sensitivity = numeric(0), Specificity = numeric(0))
+
+for (n in n_trees) {
+  # Model bagging
+  model_bag <- bagging(
+                formula = income ~ .,
+                data = train_o,
+                nbagg = n,
+                coob = TRUE,
+                control = rpart.control(minsplit = 2, cp = 0, min_depth=2)
+  )
+
+  # Prognoza na zbiorze uczącym i testowym
+  y_pred_train_bagg <- predict(model_bag, newdata = train_o[,-12], type = "class")
+  y_pred_test_bagg <- predict(model_bag, newdata = test[,-12], type = "class")
+
+  # Wyniki dla zbioru uczącego
+  accuracy <- sum(y_pred_train_bagg == train_o$income) / nrow(train_o)
+  true_positives <- sum(y_pred_train_bagg == ">50K" & train_o$income == ">50K")
+  true_negatives <- sum(y_pred_train_bagg != ">50K" & train_o$income != ">50K")
+  false_positives <- sum(y_pred_train_bagg == ">50K" & train_o$income != ">50K")
+  false_negatives <- sum(y_pred_train_bagg != ">50K" & train_o$income == ">50K")
+  sensitivity <- true_positives / (true_positives + false_negatives)
+  specificity <- true_negatives / (true_negatives + false_positives)
+
+  # Wyniki dla zbioru testowego
+  accuracy_1 <- sum(y_pred_test_bagg == test$income) / nrow(test)
+  true_positives_1 <- sum(y_pred_test_bagg == ">50K" & test$income == ">50K")
+  true_negatives_1 <- sum(y_pred_test_bagg != ">50K" & test$income != ">50K")
+  false_positives_1 <- sum(y_pred_test_bagg == ">50K" & test$income != ">50K")
+  false_negatives_1 <- sum(y_pred_test_bagg != ">50K" & test$income == ">50K")
+  sensitivity_1 <- true_positives_1 / (true_positives_1 + false_negatives_1)
+  specificity_1 <- true_negatives_1 / (true_negatives_1 + false_positives_1)
+
+  # Zapisanie wyników
+  results_train_bagg <- rbind(results_train_bagg, data.frame(NumTrees = n, Accuracy = accuracy, Sensitivity = sensitivity, Specificity = specificity))
+
+  results_test_bagg <- rbind(results_test_bagg, data.frame(NumTrees = n, Accuracy = accuracy_1, Sensitivity = sensitivity_1, Specificity = specificity_1))
+}
+```
+
+**Wyniki na zbiorze uczącym**
+
+```{r}
+print(results_train_bagg)
+```
+
+Dla zbioru uczącego, dokładność jest wyjątkowo wysoka, bo w granicach 99,5%, czułość wynosi 1 (100%) dla wszystkich modeli, niezależnie od liczby drzew. Specyficzność również jest bardzo wysoka, na poziomie około 0.99, co wskazuje na to, że model doskonale radzi sobie z przewidywaniem zarówno pozytywnych, jak i negatywnych klas na danych uczących. Takie wyniki mogą wskazywać na overfitting, oznaczający, że model został nadmiernie dopasowany do danych uczących.
+
+**\
+Wyniki na zbiorze testowym**
+
+```{r}
+print(results_test_bagg)
+```
+
+Na zbiorze testowym, wyniki są bardziej umiarkowane. Dokładność waha się między 80-82%, czułość między 72-74%, a specyficzność od ok. 83% do 84%. Wyniki te są znacznie niższe niż na zbiorze uczącym, co wskazuje na to, że model nie generalizuje tak dobrze na nowych danych. Jednakże, nadal utrzymują one rozsądny poziom, co sugeruje, że model baggingu z drzewami decyzyjnymi jest skuteczny w przewidywaniu na nieznanych danych, choć z pewnym spadkiem wydajności w porównaniu do danych treningowych.
+
+Podsumowując, liczba drzew w modelu baggingu wydaje się mieć niewielki wpływ na wyniki, co widać po stabilności dokładności, czułości i specyficzności na zbiorze testowym w miarę zwiększania liczby drzew. To sugeruje, że dodawanie większej liczby drzew niekoniecznie przynosi znaczące korzyści po osiągnięciu pewnego progu.
+
+Porównując powyższe modele, na podstawie otrzymanych wyników można stwierdzić, że drzewa decyzyjne z zastosowaniem baggingu są bardziej efektywne w przypadku predykcji wielkości rocznych dochodów badanych osób.
+
+###  4.3 Regresja logistyczna
+**Model**
+```{r}
+# Model regresji logistycznej
+glm <- glm(income ~ ., data = train_o, family = "binomial")
+summary(glm)
+```
+
+**\
+Wyniki**
+```{r}
+glm_results <- data.frame()
+glm_results <- rbind(glm_results, evaluate_glm(glm, train_o, "train"))
+glm_results <- rbind(glm_results, evaluate_glm(glm, test, "test"))
+
+glm_results
+```
+
+Wyniki modelu regresji logistycznej przedstawione w tabeli pokazują, że model dokonuje predykcji z dokładnością 76,4% na danych testowych. Oznacza to, że około 3 na 4 predykcje modelu co do dochodu są poprawne. Czułość wynosi 84,1%. To oznacza, że model dość dobrze identyfikuje rzeczywiste przypadki osób z dochodem '\>50K'. Z kolei specyficzność jest równa 73,8%, co oznacza, że model nieco gorzej klasyfikuje przypadki, gdy osoby mają dochód '\<=50K'.
+
+Porównując wszystkie trzy miary między wynikami uzyskanymi na danych treningowych i testowych, widoczna jest niewielka różnica. Można zatem stwierdzić, że model jest dobrze dopasowany do danych i ma dobrą zdolność do generalizacji na nowe, niewidziane dotychczas przypadki.
+
+###  4.4 Porównanie modeli
+
+Spośród wszystkich stworzonych modeli, wybrano trzy reprezentujące każdą z zastosowanych powyżej metod. W przypadku SVM oraz Decision Trees wybrano modele dające subiektywnie najlepsze wyniki. Dla SVM był to model z jądrem liniowym, natomiast dla Decision Trees - model z baggingiem oraz liczbą drzew równą 300. Każdy z tych modeli został oceniony w kontekście zadania predykcji rocznego dochodu powyżej 50 000 dolarów, z naciskiem na specyficzność jako kluczową metrykę.
+
+Zestawienie wyników wybranych modeli na zbiorach testowych:
+
+-   SVM linear, C = 0.6315789: Dokładność: 0.728, Czułość: 0.667, Specyficzność: 0.903
+
+-   Decision trees z baggingiem, nTrees=300: Dokładność: 0.817, Czułość: 0.743, Specyficzność:0.843
+
+-   Regresja logistyczna: Dokładność: 0.764, Czułość: 0.841, Specyficzność:0.738
+
+W porównaniu wybranych modeli, każdy z nich prezentuje unikalny zestaw mocnych i słabych stron w kontekście predykcji rocznych dochodów badanych osób. Model SVM wyróżnia się najwyższą specyficznością (0.903), co czyni go efektywnym w eliminowaniu fałszywie pozytywnych wyników dla niższych dochodów, jednak jego ogólna dokładność (0.728) i czułość (0.667) są niższe niż u pozostałych. W przypadku drzew decyzyjnych, oferują one bardziej zrównoważony profil z dobrą dokładnością (0.817), czułością (0.743) i solidną specyficznością (0.843), co czyni je preferowanym wyborem, biorąc pod uwagę równowagę pomiędzy wszystkimi kluczowymi metrykami. Natomiast regresja logistyczna, mimo że ma najwyższą czułość (0.841), pozostaje w tyle ze względu na najniższą specyficzność (0.738) i przeciętną dokładność (0.764).
+
+W efekcie, drzewa decyzyjne z baggingiem wydają się być najlepszym modelem dla tego zadania, zapewniając dość dobrą równowagę między dokładnością, czułością i specyficznością.
+
+***
+##  5. Interpretowalność modelu regresji logistycznej
+
+### 5.1 Profile ceteris-paribus
+
+Utworzone profile ceteris-paribus pokazują, jak zmiana jednej zmiennej predykcyjnej wpływa na przewidywane prawdopodobieństwo wyniku, przy założeniu, że wszystkie inne zmienne pozostają stałe.
+
+```{r include=FALSE}
+explain_glm <- DALEX::explain(model = glm,
+                               data = train_o[,-12],
+                               y = train_o$income,
+                               type = "classification",
+                               label = "LogReg")
+```
+
+**\
+Dane wybranej obserwacji**
+
+```{r}
+# Obserwacja do analizy PCP
+obs <- train_o[40,]
+obs
+```
+
+```{r}
+pcp <- predict_profile(explainer = explain_glm,
+                       new_observation = obs)
+```
+
+####  a) Zmienne ilościowe
+
+> **age**
+
+```{r}
+plot(pcp, variables = c("age"))
+```
+
+Na powyższym wykresie dla zmiennej 'age' widać, że z wiekiem wzrasta przewidywane prawdopodobieństwo dochodu wyższego niż 50K dolarów rocznie. Linia jest wyraźnie nachylona w górę, co oznacza, że dla tej konkretnej obserwacji wzrost wieku koreluje z wyższym prawdopodobieństwem zakwalifikowania jej do klasy pozytywnej, czyli dochodu '\>50K'. W tym przypadku wiek badanej osoby wynosił 68 lat, a odpowiadający temu punkt wskazuje na przewidywane prawdopodobieństwo równe 0.125.
+
+> **hours.per.week**
+
+```{r}
+plot(pcp, variables = c("hours.per.week"))
+```
+
+Dla zmiennej 'hours.per.week' podobnie jak w przypadku wieku, wraz ze wzrostem liczby godzin przepracowanych tygodniowo, wzrasta prawdopodobieństwo osiągnięcia dochodu \>50K. Oznacza to, że jeśli zwiększa się wartość 'hours.per.week' dla tej obserwacji to prawdopodobieństwo zaklasyfikowania jej do klasy pozytywnej rośnie. Na wykresie w punkcie gdzie 'hours.per.week' wynosi 40, przewidywane prawdopodobieństwo jest równe 0.125.
+
+ 
+####  b) Zmienne kategoryczne
+
+> **workclass**
+
+```{r}
+plotD3(pcp, variables = c("workclass"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+Na wykresie badana jest clasa pracownicza ('workclass'). Dla typu 'Private' prawdopodobieństwo jest najwyższe spośród wszystkich kategorii i wynosi 0.1249. Dwa najniższe prawdopodobieństwa przewidywane wykazują klasy 'Never-worked' (0.000008) oraz 'Without-pay' (0.000003), co wydaje się dość logiczne, ponieważ osoby, które nie zarabiają, nie bedą w stanie osiągnąć dochodów '\>50K'.
+ 
+ 
+> **occupation**
+
+```{r}
+plotD3(pcp, variables = c("occupation"), variable_type = "categorical", scale_plot=0.9, label_margin=130)
+```
+
+Na wykresie dla zmiennej 'occupation' można zaobserwować, że zmiana kategorii zawodowej, wybranej obserwacji, na "Exec-managerial","Prof-specialty" lub "Tech-support" znacząco zwiększa przewidywane prawdopodobieństwo przekroczenia rocznych dochodów powyżej 50 tys. dolarów (nawet do 40%) w porównaniu do bazowej kategorii "Adm-clerical", dla której prawdopodobieństwo wynosi 12.5%. Z kolei zmiana tej zmiennej na "Priv-house-serv" czy "Armed-Forces" wiązałaby się z istotnym spadkiem tego prawdopodobieństwa do granic 0%.
+
+<div></div>
+
+
+> **education**
+
+```{r}
+plotD3(pcp, variables = c("education"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+Na wykresie dla zmiennej 'education' widzimy, że wykształcenie ma znaczący wpływ na przewidywane prawdopodobieństwo przekroczenia rocznego dochodu powyżej 50K dolarów. "Some-college", które jest wartością badanej obserwacji, znajduje się gdzieś pośrodku spektrum. Gdyby w danej obserwacji zmienna z wykształceniem przyjęła wartość "Doctorate", przewidywane prawdopodobieństwo osiągnięcia dochodu \>50K byłoby znacząco wyższe (73%). Z kolei, wykształcenie na poziomie szkoły podstawowej ("1st-4th", "5th-6th", "7th-8th") wiązałoby się ze znacząco niższym prawdopodobieństwem.
+
+> **race**
+
+```{r}
+plotD3(pcp, variables = c("race"), variable_type = "categorical", scale_plot=0.9, label_margin=130)
+```
+
+Na wykresie PCP dla zmiennej 'race' przedstawiono, jak zmiana przynależności etnicznej może wpłynąć na przewidywane prawdopodobieństwo osiągnięcia rocznych dochodów powyżej 50K dolarów. Grupa 'White' jest punktem odniesienia. Gdyby dla tej próbki wartość 'race' została zmieniona na 'Asian-Pac-Islander' przewidywane prawdopodobieństwo wzrosłoby do ok. 33%. Natomiast najniższe możliwe prawdopodobieństwo otrzymano by przy zmianie 'race' na 'Amer-Indian-Eskimo' (5%).
+
+> **marital.status**
+
+```{r}
+plotD3(pcp, variables = c("marital.status"), variable_type = "categorical", scale_plot=0.9, label_margin=130)
+```
+
+Na powyższym wykresie dla zmiennej 'marital.status' przedstawiono wpływ stanu cywilnego na przewidywane prawdopodobieństwo osiągnięcia dochodów '\>50K'. Kategoria 'Never-married' jest punktem odniesienia. Zmiana statusu na 'Married-civ-spouse' znacząco zwiększyłaby przewidywane prawdopodobieństwo przekroczenia tego progu dochodowego (aż do 72%), podczas gdy statusy takie jak 'Separated' czy 'Widowed' dałyby niższe przewidywane prawdopodobieństwo w porównaniu z tym dla osób nigdy niezamężnych/nieżonatych.
+
+> **relationship**
+
+```{r}
+plotD3(pcp, variables = c("relationship"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+Na tym wykresie analizowaną zmienną jest 'relationship', czyli informacja o stosunkach rodzinnych badanej osoby. Wykres pokazuje, że predykcja zarobków '\>50K' byłaby wyższa jedynie, gdy dana osoba byłaby żoną, wtedy przewidywane prawdopodobieństwo wzrosłoby do 19%. Najniższe z kolei, było by dla kategorii 'Other-relative' - ok. 2%.
+
+> **capital.gain**
+
+```{r}
+plotD3(pcp, variables = c("capital.gain"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+Kolejna badana zmienna to 'capital.gain', czyli informacja o zyskach kapitałowych, gdzie 0 oznacza ich brak, a 1 ich obecność. Z wykresu ewidentnie wynika, że gdyby w danej próbce obecne były zyski, prawdopodobieństwo osiągnięcia dochodu '\>50K' byłoby wyższe aż o 46%.
+
+> **capital.loss**
+
+```{r}
+plotD3(pcp, variables = c("capital.loss"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+W tym wypadku badaną zmienną jest 'capital.loss', czyli informacja o stratach kapitałowych, gdzie podobnie jak w przypadku 'capital.gain' 0 oznacza ich brak, a 1 ich obecność. Z wykresu wynika, że gdyby w dana osoba notowała jakieś straty to przewidywane prawdopodobieństwo osiągnięcia dochodu większego niż 50K dolarów rocznie byłoby wyższe aż o 21%. Jest to dość nietypowe, ponieważ intuicyjnie możnaby się było spodziewać, że jakakolwiek utrata pieniędzy spowoduje obniżenie rocznych dochodów.
+
+> **gender**
+
+```{r}
+plotD3(pcp, variables = c("gender"), variable_type = "categorical", scale_plot=0.9, label_margin=100)
+```
+
+Na wykresie porównywana jest płeć męska z żeńską. Dla wybranej obserwacji, gdzie badana była kobietą przewidywane prawdopodobieństwo wyniosło 0.125, natomiast gdyby badana była mężczyzną, prawdopodobieństwo to wyniosłoby 0.178. To sugeruje, że w danym przypadku model przewiduje niższe prawdopodobieństwo dochodu '\>50K' dla kobiety, w porównaniu do mężczyzny, przy założeniu, że wszystkie inne zmienne pozostają niezmienione.
+
+### 5.2 Wykresy częściowej zależności
+
+#### a) Zmienne ilościowe
+
+> **age**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "age")
+plot(pdp)
+
+pdp <- model_profile(explainer = explain_glm, variables = "age", groups="gender")
+plot(pdp, geom = "profiles") + 
+    ggtitle("PCP and PDP for age")
+```
+
+Z pierwszego wykresu zmiennej 'age', można wyczytać, że wzrost jej wartości jest związany ze wzrostem średniego przewidywanego prawdopodobieństwa osiągnięcia dochodów '\>50K'. Na drugim wykresie przedstawiono jak zmienia się przewidywane prawdopodobieństwo w zależności od wieku dla dwóch grup płciowych. Obie linie (czerwona i niebieska) wykazują tendencję wzrostową, co sugeruje, że z wiekiem prawdopodobieństwo przewidywanego zdarzenia rośnie dla obu płci. Jednakże wzrost prawdopodobieństwa dla mężczyzn jest silniejszy, ponieważ niebieska linia ma bardziej stromy kąt nachylenia w porównaniu do czerwonej linii reprezentującej kobiety.
+
+> **hours.per.week**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "hours.per.week")
+plot(pdp)
+```
+
+W przypadku 'hours.per.week' również zauważalna jest pozytywna korelacja między przepracowanymi godzinami a wyższymi dochodami rocznymi. Oznacza to, że osoby pracujące wiecej godzin tygodniowo mają średnio większe przewidywane prawdopodobieństwo osiągnięcia dochodów '\>50K'.
+
+#### b) Zmienne kategoryczne
+
+> **workclass**
+
+```{r message=FALSE}
+pdp <- model_profile(explainer = explain_glm, variables = "workclass", variable_type = "categorical")
+plot(pdp, geom = "profiles")
+```
+
+Wykres dla zmiennej 'workclass' pokazuje, że średnia predykcja dla klas pracy, takich jak 'Never-worked' (nigdy nie pracował) i 'Without-pay' (bez wynagrodzenia) ma najniższe prawdopodobieństwo osiągnięcia zarobków większych niż 50 tys. dolarów rocznie bliskie 0. W przeciwieństwie, dla innych klas pracy, takich jak 'Local-gov', 'Private' czy 'Self-emp-inc', model pokazuje wyższe przewidywane prawdopodobieństwo, w granicach 50%.
+
+> **occupation**
+
+```{r message=FALSE}
+pdp <- model_profile(explainer = explain_glm, variables = "occupation", variable_type = "categorical")
+plot(pdp, geom = "profiles")
+```
+
+Powyższy wykres pokazuje, jak zmiana kategorii zawodu ('occupation') wpływa na przewidywania modelu. Pogrubiona linia wskazuje, że dla niektórych zawodów, takich jak 'Armed-Forces' (siły zbrojne) i 'Priv-house-serv' (prywatne usługi domowe), średnia predykcja spada do wartości bliskich 0, co sugeruje, że model przewiduje niskie prawdopodobieństwo zarobków większych niż 50K. Dla innych kategorii, takich jak 'Exec-managerial' (kierownictwo wykonawcze), 'Prof-specialty' (specjalności profesjonalne) czy 'Tech-support' (wsparcie techniczne), średnia predykcja jest znacznie wyższa (powyżej 50%).
+
+> **education**
+
+```{r message=FALSE}
+pdp <- model_profile(explainer = explain_glm, variables = "education", variable_type = "categorical")
+plot(pdp, geom = "profiles")
+```
+
+Z wykresu zmiennej 'education' można wyczytać, że najwyższe średnie prawdopodobieństwo jest dla kategorii 'Doctorate', co wskazuje na to, że osoby z wykształcenie na poziomie doktora może być istotnym czynnikiem zwiększającym predykcje dochodu większego niż 50K w tym modelu. Najniższe z kolei jest dla edukacji na poziomie klas podstawowych ok. 0, co może być uwarunkowane faktem, że osoby z niższym wykształceniem zwykle mają trudności związane ze znalezieniem pracy, a tym bardziej pracy dobrze płatnej.
+
+> **race**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "race", variable_type = "categorical")
+plot(pdp)
+```
+
+Powyższy wykres zmiennej 'race' pokazuje, że mieszkańcy wysp Azji i Pacyfiku ('Asian-Pac-Islander') mają najwyższe średnie prawdopodobieństwo zarobków '\>50K' (ok.63%), podczas gdy kategoria 'Amer-Indian-Eskimo' ma najniższą (ok.34%).
+
+> **marital.status**
+
+```{r message=FALSE}
+pdp <- model_profile(explainer = explain_glm, variables = "marital.status", variable_type = "categorical")
+plot(pdp, geom = "profiles")
+```
+
+Na kolejnym wykresie dla zmiennej 'marital.status' najwyższe przewidywane średnie prawdopodobieństwo wykazuje status "Married-civ-spouse" (małżeństwo cywilne), co sugeruje, że ten stan cywilny ma najsilniejszy pozytywny związek z przewidywanym wynikiem w modelu. Najniższe prawdopodobieństwo model przewidujedla osób, które nigdy nie były zamężne/zamężne ("Never-married"), ok. 0%.
+
+> **relationship**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "relationship", variable_type = "categorical")
+plot(pdp)
+```
+
+Z wykresu zmiennej 'relationship' można wyczytać, że najwyższe średnie prawdopodobieństwo jest dla kategorii 'Wife', co wskazuje na to, że posiadanie statusu żony w gospodarstwie domowych może być istotnym czynnikiem zwiększającym prawdopodobieństwo osiągniecia dochodu \>50K w tym modelu. Najniższe z kolei jest dla kategorii 'Other-relative', która zawiera wszystkie niewymienione w tym zbiorze pozycje w rodzinie, a wynosi ok.30%.
+
+> **capital.loss**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "capital.loss", variable_type = "categorical")
+plot(pdp)
+```
+
+Wykres dotyczący 'capital.loss' pokazuje różnicę ok. 13% między średnim prawdopodobieństwem wyższych zarobków dla osób notujących straty kapitałowe, a tych których one nie dotyczą. Jednakże, jak się okazuje korzystniejsze jest notowanie strat, ponieważ szanse na wyższe dochody są wtedy większe.
+
+> **capital.gain**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "capital.gain", variable_type = "categorical")
+plot(pdp)
+```
+
+Podobnie jak w przypadku 'capital.loss', dla zmiennej 'capital.gain' większe średnie prawdopodobieństwo dochodów '\>50K' mają osoby, które notują zyski kapitałowe. Wynosi ono ok. 68%, natomiast dla osób bez zysków jest równe ok. 40%.
+
+> **gender**
+
+```{r}
+pdp <- model_profile(explainer = explain_glm, variables = "gender", variable_type = "categorical")
+plot(pdp)
+```
+
+Wykres dla zmiennej 'gender' pokazuje, że średnia predykcja dla mężczyzn jest wyższa niż dla kobiet o ok.10%, co sugeruje, że według modelu mężczyźni mają wyższe średnie prawdopodobieństwo osiągnięcia dochodów wyżzych niż 50 tys. dolarów rocznie, w porównaniu do kobiet.
+
+### 5.3 Wartości SHAP
+
+#### **a) Wykresy BD**
+
+Dzięki takiem profilom rozkładu łatwiej można zrozumieć, które czynniki są najbardziej wpływowe na przewidywania modelu i jak każdy pojedynczy predyktor wpływa na prawdopodobieństwo końcowego wyniku.
+
+**Dane wybranej obserwacji**
+
+```{r}
+obs = train_o[54,]
+obs
+```
+
+```{r include=FALSE}
+predict(glm, obs, type="response")
+```
+
+```{r}
+bd1 <- predict_parts(explainer = explain_glm,
+                    new_observation = obs,
+                    type = "break_down_interactions", 
+                    order = c("age", "workclass", "education", "marital.status", "occupation", "relationship", "race", "gender", "capital.gain", "capital.loss", "hours.per.week"))
+p1 <- plot(bd1)
+
+bd2 <- predict_parts(explainer = explain_glm,
+                    new_observation = obs,
+                    type = "break_down_interactions", 
+                    order = c("capital.gain", "marital.status", "race", "gender", "age", "workclass", "education", "relationship", "capital.loss", "hours.per.week", "occupation"))
+p2 <- plot(bd2)
+
+bd3 <- predict_parts(explainer = explain_glm,
+                    new_observation = obs,
+                    type = "break_down_interactions", 
+                    order = c("gender", "race", "age", "education", "occupation", "hours.per.week", "workclass", "relationship", "capital.gain", "capital.loss", "marital.status"))
+p3 <- plot(bd3)
+```
+
+Poniższe wykresy przedstawiają wkład poszczególnych zmiennych w końcowe prawdopodobieństwo przewidziane przez stworzony model regresji logistycznej. Punktem wyjściowym jest wartość wyrazu wolnego (intercept), a każdy kolejny słupek pokazuje wpływ pojedynczej zmiennej na wynik. Zielone słupki zwiększają prawdopodobieństwo osiągnięcia dochodów '\>50K', natomiast czerowne je zmniejszają. Każdy model zawiera nieco inną kolejność zmiennych.
+
+```{r}
+grid.arrange(p1)
+```
+
+Dla powyższego wykresu prawdopodobieństwo osiągnięcia dochodów '\>50K' dla tej obserwacji jest dość wysokie i wynosi 0.842. W tym ustawieniu, zmienna capital.gain = '1' wydaje się mieć największy pozytywny wpływ. Drugą najbardziej znaczącą zmienną z pozytywnym wpływem jest marital.status='Married-civ-spouse'. Z kolei zawód 'Transport-moving' ma znaczący negatywny wpływ, co pokazuje długi czerwony pasek na lewo i oznacza, że zawód w transporcie i logistyce (np. kierowca ciężarówki, operator wózka widłowego, itp.) według modelu statystycznie rzadziej wiąże się z wyższymi zarobkami przekraczającymi wspomnianą granicę dochodu. Natomiast zmienna gender='Male' ma dodatni wpływ na predykcję modelu, co oznacza, że bycie mężczyzną zwiększa szanse przewidywania, że dana osoba zarabia więcej niż 50K dolarów rocznie. Jest to zgodne z wieloma analizami rynku pracy, które wskazują, że płeć może wpływać na zarobki, z mężczyznami często zarabiającymi więcej niż kobiety w wielu sektorach. Niemniej jednak, wpływ tej zmiennej nie jest tak znaczący jak niektórych innych.
+
+```{r}
+grid.arrange(p2)
+```
+
+Na tym wykresie, 'capital.gain' ponownie ma największy wpływ na wynik predykcji, jednak jest on o połowe mniejszy niż na wcześniejszym wykresie. Z kolei cecha 'marital.status' przybrała na ważności i jej pozytywny wpływ jest większy niż poprzednio. Niezmiennie zawód "Transport-moving" ma największy negatywny wpływ na końcowy wynik, jednak podobnie jak zmienne 'age' oraz 'education' jest on zdecydowanie niższy niż uwcześniej.
+
+#### **b) Wartości SHAP**
+
+```{r}
+shap <- predict_parts(explainer = explain_glm, 
+                      new_observation = obs, 
+                      type = "shap")
+p1 <- plot(shap)
+p2 <- plot(shap, show_boxplots = FALSE) 
+grid.arrange(p1, p2, ncol = 2)
+```
+
+Powyższe wykresy również przedstawiają wpływ poszczególnych zmiennych na przewidywaną wartość modelu. Są to jednak uśrednione wartości udziałów przypisanych danej zmiennej ze wszystkich możliwych uporządkowań.
+
+Na wykresach można zauważyć, że największy wkład ponownie ma zmienna 'capital.gain' = 1 (ok. 34%), co oznacza, że ma ona znaczący (pozytywny) wpływ na przewidywanie osiągnięcia dochodów '\>50K'. Drugą zmienną znacząco zwiększającą prawdopodobieństwo predykcji dochodów '\>50K' jest zmienna 'marital.status' = 'Married-civ-spouse', ok. 15%.
+
+Z tych jak i ze wcześniejszych wykresów można wyróżnić 3 zmienne, które mają znaczący negatywny wpływ na pozytywną predykcję dochodu, czyli zmniejszają szanse przekroczenia progu 50K. Są to: 'occupation', 'education' oraz 'age'. Sumarycznie ich procentowy wkład wynosi ok. -18%.
+
+Pozostałe zmienne mają zarówno pozytywny jak i negatywny wpływ, jednak ich wartości są bardzo niskie, ponieważ oscylują między 0-2%, a więc nie mają aż tak dużego znaczenia dla końcowej predykcji.
+
+***
+## 6. Wnioski
+
+Celem tego projektu była predykcja zmiennej docelowej 'income', która może być interpretowana jako prawdopodobieństwo osiągnięcia przez jednostki poziomu dochodu większego niż 50 000 dolarów rocznie - klasa '\>50K'. Projekt rozpoczął się od dokładnej analizy i przygotowania danych, obejmującej ocenę podstawowych statystyk, identyfikację i uzupełnienie brakujących danych, a także modyfikację zmiennych, aby ulepszyć ich przydatność prognostyczną. Dane zostały odpowiednio zbalansowane, co zapewniło solidną podstawę dla budowy modeli predykcyjnych. Następnie zbiór danych został podzielony na część uczącą i testową w proporcji 80:20, co umożliwiło weryfikację wydajności modeli na nieznanych dotąd przykładach.
+
+W projekcie wykorzystano trzy metody uczenia maszynowego: algorytm SVM, drzewa decyzyjne oraz regresję logistyczną. Wszystkie stworzone modele zostały starannie ocenione pod kątem jakości klasyfikacji, przy czym najlepsze wyniki osiągnęło drzewo decyzyjne z zastosowaniem techniki baggingu, zapewniając odpowiednią równowagę między dokładnością (81.7%), czułością (75.2%) i specyficznością (83.9%). Niemniej jednak, pomimo że osiągnięte wyniki są obiecujące, istnieje nadal potencjał do dalszego udoskonalenia utworzonych modeli w celu zwiększenia ich skuteczności predykcyjnej.
+
+W kolejnym kroku, w celu zrozumienia, jak model formułuje predykcje, przeprowadzono szczegółową analizę interpretowalności na modelu regresji logistycznej wykorzystując profile ceteris-paribus, wykresy częściowej zależności oraz wartości SHAP. Analiza ta pozwoliła na głębsze zrozumienie interakcji między cechami a przewidywaną zmienną 'income', podkreślając znaczenie takich zmiennych jak np. zyski kapitałowe, zawód, stan cywilny czy edukacja, oferując jednocześnie wgląd w to, jak poszczególne cechy wpływają na model w kontekście rzeczywistym.
+
+Podsumowując, rezultaty projektu dostarczają nie tylko istotnych informacji dla tworzenia efektywnych modeli prognozujących, ale także zwracają uwagę na znaczenie zrozumiałej interpretacji modeli w aspekcie ich wykorzystania w uczeniu maszynowym.
