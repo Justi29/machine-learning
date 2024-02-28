@@ -1,0 +1,3 @@
+### **Analiza zarobków: Przewidywanie dochodów z wykorzystaniem metod uczenia maszynowego na zbiorze danych 'Adult'.**
+
+Projekt koncentruje się na przewidywaniu, czy osoby zarabiają powyżej 50 000 dolarów rocznie, wykorzystując do tego celu zbiór danych "Adult". W pierwszej fazie projektu przeprowadzono szczegółową analizę i przygotowanie danych. Następnie zastosowano trzy metody uczenia maszynowego: algorytm SVM, drzewa decyzyjne oraz regresję logistyczną, w celu zbudowania modeli predykcyjnych. Otrzymane wyniki zostały przeanalizowane, a także porównane między modelami. W dalszej części pracy skupiono się na analizie interpretowalności modelu regresji logistycznej. W końcowej fazie pracy przedstawiono wnioski z całego projektu.
